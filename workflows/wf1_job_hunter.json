@@ -1,0 +1,578 @@
+{
+  "name": "Job Hunter - find, score & send jobs",
+  "nodes": [
+    {
+      "id": "node-1",
+      "name": "Every day 10 AM & 8 PM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 10,20 * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node-2",
+      "name": "Run manually (test)",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        200
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "node-3",
+      "name": "Gmail - job alert emails",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        240,
+        100
+      ],
+      "parameters": {
+        "operation": "getAll",
+        "returnAll": false,
+        "limit": 30,
+        "simple": false,
+        "filters": {
+          "q": "newer_than:1d -category:promotions (from:linkedin.com OR from:naukri.com OR from:instahyre.com OR from:cutshort.io OR from:wellfound.com)"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "Gmail account"
+        }
+      },
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "node-4",
+      "name": "Collect jobs (emails + boards + careers)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        100
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ===== Collect jobs: job-alert emails + remote job boards + company career pages =====\n// Edit the lists below to change companies / sources.\nconst ATS = [\n  // [system, slug, company name, product/service]\n  ['lever', 'zeta', 'Zeta', 'Product'], ['greenhouse', 'devrev', 'DevRev', 'Product'],\n  ['lever', 'cred', 'CRED', 'Product'], ['greenhouse', 'groww', 'Groww', 'Product'],\n  ['lever', 'meesho', 'Meesho', 'Product'], ['lever', 'hevodata', 'Hevo Data', 'Product'],\n  ['ashby', 'sarvam', 'Sarvam AI', 'Product'],\n  ['greenhouse', 'stripe', 'Stripe', 'Product'], ['greenhouse', 'databricks', 'Databricks', 'Product'],\n  ['greenhouse', 'gitlab', 'GitLab', 'Product'], ['greenhouse', 'cloudflare', 'Cloudflare', 'Product'],\n  ['greenhouse', 'okta', 'Okta', 'Product'], ['greenhouse', 'intercom', 'Intercom', 'Product'],\n  ['greenhouse', 'wise', 'Wise', 'Product'], ['greenhouse', 'n26', 'N26', 'Product'],\n  ['greenhouse', 'adyen', 'Adyen', 'Product'], ['greenhouse', 'gocardless', 'GoCardless', 'Product'],\n  ['greenhouse', 'agoda', 'Agoda', 'Product'], ['greenhouse', 'vercel', 'Vercel', 'Product'],\n  ['ashby', 'n8n', 'n8n', 'Product'], ['ashby', 'miro', 'Miro', 'Product'],\n  ['ashby', 'supabase', 'Supabase', 'Product'], ['ashby', 'posthog', 'PostHog', 'Product'],\n  ['ashby', 'linear', 'Linear', 'Product'], ['ashby', 'replit', 'Replit', 'Product'],\n  ['ashby', 'perplexity', 'Perplexity', 'Product'], ['ashby', 'cohere', 'Cohere', 'Product'],\n  ['ashby', 'zapier', 'Zapier', 'Product'],\n];\nconst ROLE = /(front[\\s-]?end|frontend|react|full[\\s-]?stack|fullstack|mern|node\\.?js|javascript|typescript|next\\.?js|\\bui\\b|\\bai\\b|artificial intelligence|machine learning|\\bml\\b|llm|gen ?ai|generative|agentic|software (engineer|developer)|\\bsde\\b|product engineer|application developer|java\\b)/i;\n\nconst H = { 'User-Agent': 'Mozilla/5.0 (personal job alert bot)' };\nconst get = (url, json = true) => this.helpers.httpRequest({ url, json, timeout: 20000, headers: H }).catch(() => null);\nconst decode = s => String(s || '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '\"').replace(/&#39;|&rsquo;|&#x27;/g, \"'\").replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&');\nconst strip = s => decode(decode(s)).replace(/<style[\\s\\S]*?<\\/style>/gi, ' ').replace(/<[^>]*>/g, ' ').replace(/\\s+/g, ' ').trim();\nconst hash = s => { let h = 5381; for (const c of String(s)) h = ((h * 33) ^ c.charCodeAt(0)) >>> 0; return h.toString(36); };\nconst jobs = [];\nconst stats = {};\nconst add = (j) => {\n  if (!j.link || !j.role) return;\n  stats[j.source] = (stats[j.source] || 0) + 1;\n  jobs.push({ company: '', location: '', workMode: '', salary: '', companyType: '', posted: '', ...j, description: strip(j.description).slice(0, 1800) });\n};\n\n// ---------- 1. Job alert emails (Gmail node output) ----------\nfor (const item of $input.all()) {\n  const m = item.json || {};\n  const html = m.html || m.textAsHtml || '';\n  if (!html) continue;\n  const from = JSON.stringify(m.from || '').toLowerCase();\n  const src = from.includes('linkedin') ? 'LinkedIn alert' : from.includes('naukri') ? 'Naukri alert' : from.includes('instahyre') ? 'Instahyre alert' : from.includes('cutshort') ? 'Cutshort alert' : from.includes('wellfound') ? 'Wellfound alert' : 'Email alert';\n  const map = {};\n  const re = /<a\\b[^>]*href=[\"']([^\"']+)[\"'][^>]*>([\\s\\S]*?)<\\/a>/gi;\n  let a;\n  while ((a = re.exec(html))) {\n    const href = decode(a[1]);\n    let id, link, mm;\n    if ((mm = href.match(/linkedin\\.com\\/(?:comm\\/)?jobs\\/view\\/(\\d+)/))) { id = 'li-' + mm[1]; link = 'https://www.linkedin.com/jobs/view/' + mm[1] + '/'; }\n    else if ((mm = href.match(/naukri\\.com\\/(?:jd\\/)?(job-listings-[a-z0-9-]+?-(\\d{9,14}))(?=[?#]|$)/i))) { id = 'nk-' + mm[2]; link = 'https://www.naukri.com/' + mm[1]; }\n    else if ((mm = href.match(/instahyre\\.com\\/job-(\\d+)[^?#]*/))) { id = 'ih-' + mm[1]; link = 'https://www.' + mm[0].replace(/^.*?instahyre/, 'instahyre'); }\n    else if ((mm = href.match(/cutshort\\.io\\/job\\/[^?#]+/))) { link = 'https://' + mm[0]; id = 'cs-' + hash(mm[0]); }\n    else if ((mm = href.match(/wellfound\\.com\\/jobs\\/(\\d+[^?#]*)/))) { link = 'https://wellfound.com/jobs/' + mm[1]; id = 'wf-' + mm[1].split('-')[0]; }\n    else continue;\n    const t = strip(a[2]);\n    map[id] = map[id] || { id, link, texts: [] };\n    if (t && !map[id].texts.includes(t)) map[id].texts.push(t);\n  }\n  for (const v of Object.values(map)) {\n    let ctx = v.texts.join(' | ');\n    let exp = '';\n    const nm = v.link.match(/job-listings-(.+)-(\\d+)-to-(\\d+)-years-\\d+$/);\n    if (nm) { ctx = nm[1].replace(/-/g, ' ') + ' | ' + ctx; exp = nm[2] + '-' + nm[3] + ' yrs'; }\n    if (!ctx.trim()) continue;\n    add({ jobId: v.id, source: src, role: ctx.slice(0, 160), fromEmail: true, experience: exp, description: 'Job alert email text: ' + ctx + (exp ? ' | Experience: ' + exp : ''), link: v.link, posted: m.date || '' });\n  }\n}\n\n// ---------- 2. Remote job boards ----------\nconst [rem, rok, him, wwr1, wwr2] = await Promise.all([\n  get('https://remotive.com/api/remote-jobs?category=software-dev&limit=150'),\n  get('https://remoteok.com/api'),\n  get('https://himalayas.app/jobs/api?limit=100'),\n  get('https://weworkremotely.com/categories/remote-full-stack-programming-jobs.rss', false),\n  get('https://weworkremotely.com/categories/remote-front-end-programming-jobs.rss', false),\n]);\nfor (const j of (rem && rem.jobs) || []) add({ jobId: 'rm-' + j.id, source: 'Remotive', role: j.title, company: j.company_name, location: j.candidate_required_location || 'Remote', workMode: 'Remote', salary: j.salary || '', description: (j.tags || []).join(', ') + ' ' + j.description, link: j.url, posted: j.publication_date });\nfor (const j of (Array.isArray(rok) ? rok : []).filter(x => x.id && x.position)) add({ jobId: 'ro-' + j.id, source: 'RemoteOK', role: j.position, company: j.company, location: j.location || 'Remote', workMode: 'Remote', salary: j.salary_min ? `USD ${j.salary_min}-${j.salary_max} per year` : '', description: (j.tags || []).join(', ') + ' ' + j.description, link: j.url, posted: j.date });\nfor (const j of (him && him.jobs) || []) {\n  let pd = j.pubDate; if (typeof pd === 'number') pd = new Date(pd < 1e12 ? pd * 1000 : pd).toISOString();\n  add({ jobId: 'hm-' + hash(j.guid || j.applicationLink), source: 'Himalayas', role: j.title, company: j.companyName, location: (j.locationRestrictions || []).join(', ') || 'Worldwide', workMode: 'Remote', salary: j.minSalary ? `${j.currency || ''} ${j.minSalary}-${j.maxSalary || ''} ${j.salaryPeriod || ''}` : '', description: (j.excerpt || '') + ' ' + (j.description || ''), link: j.applicationLink || j.guid, posted: pd || '' });\n}\nfor (const x of [wwr1, wwr2]) {\n  for (const it of String(x || '').split('<item>').slice(1)) {\n    const tag = n => { const mm = it.match(new RegExp('<' + n + '>(?:<!\\\\[CDATA\\\\[)?([\\\\s\\\\S]*?)(?:\\\\]\\\\]>)?</' + n + '>')); return mm ? mm[1].trim() : ''; };\n    const title = decode(tag('title')); const parts = title.split(':');\n    const company = parts.length > 1 ? parts.shift().trim() : '';\n    add({ jobId: 'ww-' + hash(tag('link')), source: 'WeWorkRemotely', role: parts.join(':').trim(), company, location: tag('region') || 'Remote', workMode: 'Remote', description: tag('description'), link: tag('link'), posted: tag('pubDate') });\n  }\n}\n\n// ---------- 3. Company career pages (Greenhouse / Lever / Ashby public job APIs) ----------\nawait Promise.all(ATS.map(async ([sys, slug, name, type]) => {\n  if (sys === 'greenhouse') {\n    const d = await get(`https://boards-api.greenhouse.io/v1/boards/${slug}/jobs`);\n    const list = ((d && d.jobs) || []).filter(j => ROLE.test(j.title)).slice(0, 25);\n    await Promise.all(list.map(async j => {\n      const det = await get(`https://boards-api.greenhouse.io/v1/boards/${slug}/jobs/${j.id}`);\n      add({ jobId: 'gh-' + j.id, source: 'Careers: ' + name, role: j.title, company: name, companyType: type, location: (j.location && j.location.name) || '', description: det ? det.content : '', link: j.absolute_url, posted: j.updated_at });\n    }));\n  } else if (sys === 'lever') {\n    const d = await get(`https://api.lever.co/v0/postings/${slug}?mode=json&limit=300`);\n    for (const j of (Array.isArray(d) ? d : []).filter(j => ROLE.test(j.text)).slice(0, 25)) {\n      const sr = j.salaryRange ? `${j.salaryRange.currency} ${j.salaryRange.min}-${j.salaryRange.max} ${j.salaryRange.interval || ''}` : '';\n      add({ jobId: 'lv-' + j.id, source: 'Careers: ' + name, role: j.text, company: name, companyType: type, location: ((j.categories && (j.categories.allLocations || [j.categories.location])) || []).join(', '), workMode: j.workplaceType || '', salary: sr, description: j.descriptionPlain || j.description, link: j.hostedUrl, posted: j.createdAt ? new Date(j.createdAt).toISOString() : '' });\n    }\n  } else if (sys === 'ashby') {\n    const d = await get(`https://api.ashbyhq.com/posting-api/job-board/${slug}?includeCompensation=true`);\n    for (const j of ((d && d.jobs) || []).filter(j => ROLE.test(j.title)).slice(0, 25)) {\n      const locs = [j.location].concat((j.secondaryLocations || []).map(s => s.location)).filter(Boolean).join(', ');\n      add({ jobId: 'ab-' + j.id, source: 'Careers: ' + name, role: j.title, company: name, companyType: type, location: locs, workMode: j.isRemote ? 'Remote' : (j.workplaceType || ''), salary: (j.compensation && j.compensation.compensationTierSummary) || '', description: j.descriptionPlain || j.descriptionHtml, link: j.jobUrl, posted: j.publishedAt });\n    }\n  }\n}));\n\n// de-duplicate inside this run\nconst seen = new Set();\nconst out = jobs.filter(j => !seen.has(j.jobId) && seen.add(j.jobId));\nif (!out.length) return [];\nreturn out.map(j => ({ json: { ...j, _stats: stats } }));\n"
+      }
+    },
+    {
+      "id": "node-5",
+      "name": "Skip jobs already seen",
+      "type": "n8n-nodes-base.removeDuplicates",
+      "typeVersion": 2,
+      "position": [
+        720,
+        100
+      ],
+      "parameters": {
+        "operation": "removeItemsRepeatedInPreviousExecutions",
+        "dedupeValue": "={{ 'v4-' + $json.jobId }}",
+        "options": {
+          "historySize": 50000
+        }
+      }
+    },
+    {
+      "id": "node-6",
+      "name": "Filter & build prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        100
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ===== Rule filter + build the Gemini prompt =====\n// Your rules - edit here. Salary values are examples (LPA = lakh INR per year).\nconst RULES = {\n  chennaiProductMinLPA: 12,\n  chennaiServiceMinLPA: 14,\n  outsideChennaiMinLPA: 20,\n  preferredCountries: ['United States', 'United Kingdom', 'Germany', 'Singapore', 'Ireland', 'Canada', 'Australia', 'New Zealand', 'UAE (Dubai)'], // edit to your preferred countries\n  maxJobsToScore: 40,\n  maxPostAgeDays: 7,\n};\nconst TARGETS = /(freshworks|zoho|chargebee|kissflow|uniphore|facilio|surveysparrow|hippo ?video|gofrugal|vue\\.?ai|mad street den|detect technologies|saama|pickyourtrail|paypal|standard chartered|barclays|bank of america|citi|mr\\.? cooper|temenos|amazon|walmart|comcast|ford|caterpillar|hmh|houghton|pearson|ideas2it|tiger analytics|payoda|indium|zeta|devrev|cred|groww|meesho|hevo|sarvam)/i;\nconst ROLE = /(front[\\s-]?end|frontend|react|full[\\s-]?stack|fullstack|mern|node\\.?js|javascript|typescript|next\\.?js|\\bui\\b|\\bai\\b|artificial intelligence|machine learning|\\bml\\b|llm|gen ?ai|generative|agentic|software (engineer|developer)|\\bsde\\b|product engineer|application developer|java\\b)/i;\nconst EXCLUDE = /(principal|\\bstaff\\b|director|head of|\\bvp\\b|vice president|manager|\\bintern\\b|internship|trainee|fresher|android|\\bios\\b|embedded|sales|marketing|recruit|account exec|designer|\\bqa\\b|test engineer|sdet|devops|\\bsre\\b|site reliability|data engineer|\\.net\\b|php|golang|\\bgo engineer|rust\\b|salesforce|\\bsap\\b|mainframe|support engineer|security engineer|hardware|firmware|mechanical|electrical|scientist|researcher|research engineer)/i;\nconst INDIA = /(india|chennai|bengaluru|bangalore|hyderabad|pune|mumbai|delhi|gurgaon|gurugram|noida|kochi|coimbatore|kolkata|ahmedabad|trivandrum|thiruvananthapuram|mysore|remote - in|\\bin\\b$)/i;\nconst OPEN_REMOTE = /(worldwide|anywhere|global|apac|asia|india|^remote$|^$)/i;\nconst VISA_YES = /(visa sponsorship|sponsor(ship)? (your |a |the )?visa|visa support|relocation (support|assistance|package|bonus)|we (will|can) sponsor|sponsorship (is )?available)/i;\nconst VISA_NO = /(no visa sponsorship|not (be )?(able to )?sponsor|unable to sponsor|cannot sponsor|can't sponsor|does not sponsor|without (the need for )?sponsorship|must (already )?have (the )?(right|authori[sz]ation) to work)/i;\n\nconst lpaFrom = (s) => {\n  s = String(s || '');\n  let m = s.match(/(\\d+(?:\\.\\d+)?)\\s*(?:-|to)\\s*(\\d+(?:\\.\\d+)?)\\s*(lacs|lakhs?|lpa|l\\b)/i);\n  if (m) return parseFloat(m[2]);\n  m = s.match(/(?:usd|\\$)\\s*([\\d,]+)\\s*(?:-|to)\\s*\\$?([\\d,]+)/i);\n  if (m) { const v = parseFloat(m[2].replace(/,/g, '')); if (v > 10000) return v * 88 / 1e5; }\n  return null; // unknown\n};\n\nconst now = Date.now();\nconst kept = [];\nconst dropped = {};\nconst drop = (why) => { dropped[why] = (dropped[why] || 0) + 1; };\nfor (const { json: j } of $input.all()) {\n  const title = j.role || '';\n  if (!ROLE.test(title)) { drop('role'); continue; }\n  if (EXCLUDE.test(j.fromEmail ? title.split('|')[0] : title)) { drop('excluded title'); continue; }\n  if (j.posted && !j.fromEmail) {\n    const t = Date.parse(j.posted);\n    const maxAge = String(j.source).startsWith('Careers') ? 60 : RULES.maxPostAgeDays;\n    if (t && now - t > maxAge * 864e5) { drop('old'); continue; }\n  }\n  const expMin = (j.experience || '').match(/^(\\d+)/);\n  if (expMin && +expMin[1] >= 7) { drop('experience 7+'); continue; }\n\n  const loc = (j.location || '').trim();\n  const text = loc + ' ' + j.description;\n  const chennai = /chennai/i.test(loc + ' ' + (j.fromEmail ? title : ''));\n  const india = j.fromEmail || INDIA.test(loc);\n  let zone;\n  if (chennai) zone = 'Chennai';\n  else if (india) zone = 'India (outside Chennai)';\n  else if ((j.workMode || '').toLowerCase().includes('remote') && OPEN_REMOTE.test(loc.replace(/remote[,\\s-]*/i, '').trim())) zone = 'Remote (open to India)';\n  else {\n    zone = 'Overseas';\n    if (!VISA_YES.test(text) || VISA_NO.test(text)) { drop('overseas without visa sponsorship'); continue; }\n  }\n  const lpa = lpaFrom(j.salary + ' ' + (j.fromEmail ? j.description : ''));\n  const min = zone === 'Chennai' ? RULES.chennaiProductMinLPA : RULES.outsideChennaiMinLPA;\n  if (lpa !== null && lpa < min) { drop('salary below minimum'); continue; }\n\n  let priority = 0;\n  if (TARGETS.test(j.company + ' ' + title)) priority += 3;\n  if (zone === 'Chennai') priority += 2;\n  if (j.fromEmail) priority += 1;\n  if (/react|full[\\s-]?stack|ai engineer|ai developer|llm|gen ?ai/i.test(title)) priority += 1;\n  kept.push({ ...j, zone, salaryLPA: lpa, priority });\n}\nkept.sort((a, b) => b.priority - a.priority);\nconst jobs = kept.slice(0, RULES.maxJobsToScore);\nif (!jobs.length) return [];\n\nconst profile = `CANDIDATE: <Your name>, <City>, <Country>. <Current title>, <N> years experience.\nSkills: <your main skills>.\nAI: <AI tools and frameworks you use>.\nWork: <one line per recent project or role>.\nEducation: <degree>.\nTARGET ROLES: Frontend Developer; Full Stack (React + Node, Java OK); AI Developer / AI Engineer.\nSALARY RULES: home-city product company >= ${RULES.chennaiProductMinLPA} LPA; home-city service company >= ${RULES.chennaiServiceMinLPA} LPA; anywhere else >= ${RULES.outsideChennaiMinLPA} LPA (or equivalent).\nOVERSEAS: must offer visa sponsorship; preferred countries: ${RULES.preferredCountries.join(', ')}.\nPREFERENCES: product companies preferred over IT services/consulting.`;\n\nconst list = jobs.map((j, i) => `### JOB ${i + 1}\\nid: ${j.jobId}\\nsource: ${j.source}\\ntitle: ${j.role}\\ncompany: ${j.company || '(see text)'}\\nlocation: ${j.location || '(see text)'} | zone: ${j.zone} | mode: ${j.workMode || '?'}\\nsalary: ${j.salary || 'not stated'}\\ntext: ${j.description.slice(0, 900)}`).join('\\n\\n');\n\nconst prompt = `You are a strict career assistant screening jobs for one candidate.\\n\\n${profile}\\n\\nScore each job 0-100 for how good an application would be: role match to target roles and skills (50%), seniority fit for 4-5 years experience (15%), company quality and product-company preference (15%), likelihood the pay meets the salary rules (20%). Give a score below 60 if the job clearly breaks a rule (wrong role family, needs 7+ years, IT-services company in Chennai unlikely to pay 15 LPA, outside Chennai and unlikely to pay 24 LPA, overseas without sponsorship). Some jobs come from email alerts where title, company and location are mixed into one text line - work out the real values.\\n\\nReturn ONLY a JSON array, no markdown, one object per job, in this exact shape:\\n[{\"id\":\"...\",\"score\":0,\"role\":\"clean job title\",\"company\":\"company name\",\"location\":\"city, country\",\"workMode\":\"Onsite|Hybrid|Remote\",\"companyType\":\"Product|Service|Unknown\",\"salary\":\"stated or estimated range in LPA or currency\",\"why\":\"max 25 words why it fits\",\"gaps\":\"max 15 words main gap or risk\"}]\\n\\nJOBS:\\n\\n${list}`;\n\nreturn [{ json: { prompt, jobs, keptCount: kept.length, dropped, stats: ($input.first().json._stats) || {} } }];\n"
+      }
+    },
+    {
+      "id": "node-7",
+      "name": "Gemini - score jobs",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        1200,
+        100
+      ],
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.prompt }}",
+        "hasOutputParser": false,
+        "needsFallback": true
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "id": "node-8",
+      "name": "Gemini 3.5 Flash (main)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        1200,
+        320
+      ],
+      "parameters": {
+        "modelName": "models/gemini-3.5-flash",
+        "options": {
+          "temperature": 0.2,
+          "maxOutputTokens": 16000
+        }
+      },
+      "credentials": {
+        "googlePalmApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "id": "node-9",
+      "name": "Gemini Flash Lite (backup)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        1360,
+        320
+      ],
+      "parameters": {
+        "modelName": "models/gemini-flash-lite-latest",
+        "options": {
+          "temperature": 0.2,
+          "maxOutputTokens": 16000
+        }
+      },
+      "credentials": {
+        "googlePalmApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "id": "node-10",
+      "name": "Pick top jobs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        100
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ===== Read Gemini scores, keep the best jobs, build tracker row + Telegram message =====\nconst MIN_SCORE = 70;      // only send jobs scoring at least this\nconst MAX_PER_RUN = 5;     // 2 runs a day -> up to 10 jobs a day\nconst N8N_URL = 'http://localhost:5678';\n\nconst raw = String($input.first().json.text || $input.first().json.output || \"\").replace(/`{3}json|`{3}/g, '').trim();\nlet scores = [];\ntry { scores = JSON.parse(raw.slice(raw.indexOf('['), raw.lastIndexOf(']') + 1)); } catch (e) { throw new Error('Could not read Gemini JSON: ' + raw.slice(0, 300)); }\nconst jobs = $('Filter & build prompt').first().json.jobs;\nconst byId = Object.fromEntries(jobs.map(j => [j.jobId, j]));\nconst esc = s => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst today = $now.setZone('Asia/Kolkata').toFormat('yyyy-MM-dd');\n\nconst best = scores\n  .filter(s => byId[s.id] && Number(s.score) >= MIN_SCORE)\n  .sort((a, b) => b.score - a.score)\n  .slice(0, MAX_PER_RUN);\n\nreturn best.map(s => {\n  const j = byId[s.id];\n  const company = s.company || j.company;\n  const role = s.role || j.role;\n  const type = j.companyType || s.companyType || 'Unknown';\n  const base = `${N8N_URL}/webhook/job-decision?id=${encodeURIComponent(j.jobId)}`;\n  const text =\n`<b>🎯 ${s.score}/100 · ${esc(role)}</b>\n🏢 ${esc(company)} (${esc(type)})\n📍 ${esc(s.location || j.location || j.zone)} · ${esc(s.workMode || j.workMode || '?')}\n💰 ${esc(s.salary || j.salary || 'not stated')}\n✅ ${esc(s.why)}\n⚠️ ${esc(s.gaps)}\n📨 ${esc(j.source)}\n\n<a href=\"${base}&d=apply&u=${encodeURIComponent(j.link)}\">✅ Apply (opens job + marks Applied)</a>\n<a href=\"${base}&d=skip\">❌ Skip</a>`;\n  return {\n    json: {\n      row: {\n        'Job ID': j.jobId, 'Date Found': today, 'Source': j.source, 'Company': company, 'Role': role,\n        'Location': s.location || j.location || j.zone, 'Work Mode': s.workMode || j.workMode || '',\n        'Salary': s.salary || j.salary || '', 'Company Type': type, 'Fit Score': s.score,\n        'Why It Fits': s.why || '', 'Gaps': s.gaps || '', 'Link': j.link, 'Status': 'Pending',\n        'Applied On': '', 'Follow-up On': '', 'Notes': '',\n      },\n      tgText: text,\n      link: j.link,\n    },\n  };\n});\n"
+      }
+    },
+    {
+      "id": "node-11",
+      "name": "Log to Job Tracker sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1680,
+        100
+      ],
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_GOOGLE_SHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gid=0",
+          "cachedResultName": "Sheet1"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Job ID": "={{ $json.row['Job ID'] }}",
+            "Date Found": "={{ $json.row['Date Found'] }}",
+            "Source": "={{ $json.row['Source'] }}",
+            "Company": "={{ $json.row['Company'] }}",
+            "Role": "={{ $json.row['Role'] }}",
+            "Location": "={{ $json.row['Location'] }}",
+            "Work Mode": "={{ $json.row['Work Mode'] }}",
+            "Salary": "={{ $json.row['Salary'] }}",
+            "Company Type": "={{ $json.row['Company Type'] }}",
+            "Fit Score": "={{ $json.row['Fit Score'] }}",
+            "Why It Fits": "={{ $json.row['Why It Fits'] }}",
+            "Gaps": "={{ $json.row['Gaps'] }}",
+            "Link": "={{ $json.row['Link'] }}",
+            "Status": "={{ $json.row['Status'] }}",
+            "Applied On": "={{ $json.row['Applied On'] }}",
+            "Follow-up On": "={{ $json.row['Follow-up On'] }}",
+            "Notes": "={{ $json.row['Notes'] }}"
+          },
+          "matchingColumns": [
+            "Job ID"
+          ],
+          "schema": [
+            {
+              "id": "Job ID",
+              "displayName": "Job ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Date Found",
+              "displayName": "Date Found",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Source",
+              "displayName": "Source",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Company",
+              "displayName": "Company",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Role",
+              "displayName": "Role",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Location",
+              "displayName": "Location",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Work Mode",
+              "displayName": "Work Mode",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Salary",
+              "displayName": "Salary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Company Type",
+              "displayName": "Company Type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Fit Score",
+              "displayName": "Fit Score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Why It Fits",
+              "displayName": "Why It Fits",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Gaps",
+              "displayName": "Gaps",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Link",
+              "displayName": "Link",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Applied On",
+              "displayName": "Applied On",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Follow-up On",
+              "displayName": "Follow-up On",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Notes",
+              "displayName": "Notes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {
+          "cellFormat": "RAW"
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "id": "node-12",
+      "name": "Send job to Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1920,
+        100
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "={{ $('Pick top jobs').item.json.tgText }}",
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "🔗 Open job posting",
+                    "additionalFields": {
+                      "url": "={{ $('Pick top jobs').item.json.link }}"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML",
+          "disable_web_page_preview": true
+        }
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "Telegram account"
+        }
+      },
+      "retryOnFail": true,
+      "waitBetweenTries": 3000
+    }
+  ],
+  "connections": {
+    "Every day 10 AM & 8 PM": {
+      "main": [
+        [
+          {
+            "node": "Gmail - job alert emails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run manually (test)": {
+      "main": [
+        [
+          {
+            "node": "Gmail - job alert emails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gmail - job alert emails": {
+      "main": [
+        [
+          {
+            "node": "Collect jobs (emails + boards + careers)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect jobs (emails + boards + careers)": {
+      "main": [
+        [
+          {
+            "node": "Skip jobs already seen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Skip jobs already seen": {
+      "main": [
+        [
+          {
+            "node": "Filter & build prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter & build prompt": {
+      "main": [
+        [
+          {
+            "node": "Gemini - score jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini - score jobs": {
+      "main": [
+        [
+          {
+            "node": "Pick top jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick top jobs": {
+      "main": [
+        [
+          {
+            "node": "Log to Job Tracker sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log to Job Tracker sheet": {
+      "main": [
+        [
+          {
+            "node": "Send job to Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini 3.5 Flash (main)": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Gemini - score jobs",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Flash Lite (backup)": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Gemini - score jobs",
+            "type": "ai_languageModel",
+            "index": 1
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Kolkata",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  }
+}

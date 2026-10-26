@@ -1,0 +1,188 @@
+{
+  "name": "Job Hunter - Apply/Skip handler",
+  "nodes": [
+    {
+      "id": "node-101",
+      "name": "Apply or Skip link clicked",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "job-decision",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "b6f1c2d4-7a8e-4f3b-9c21-5d0e8a1f4c77"
+    },
+    {
+      "id": "node-102",
+      "name": "Work out status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ===== Apply / Skip link clicked from Telegram =====\nconst q = $input.first().json.query || {};\nconst apply = q.d === 'apply';\nconst today = $now.setZone('Asia/Kolkata');\nreturn [{ json: {\n  jobId: q.id || '',\n  status: apply ? 'Applied' : 'Skipped',\n  appliedOn: apply ? today.toFormat('yyyy-MM-dd') : '',\n  followUpOn: apply ? today.plus({ days: 7 }).toFormat('yyyy-MM-dd') : '',\n  link: q.u || '',\n  apply,\n} }];\n"
+      }
+    },
+    {
+      "id": "node-103",
+      "name": "Update row in tracker",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        480,
+        0
+      ],
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_GOOGLE_SHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gid=0",
+          "cachedResultName": "Sheet1"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Job ID": "={{ $json.jobId }}",
+            "Status": "={{ $json.status }}",
+            "Applied On": "={{ $json.appliedOn }}",
+            "Follow-up On": "={{ $json.followUpOn }}"
+          },
+          "matchingColumns": [
+            "Job ID"
+          ],
+          "schema": [
+            {
+              "id": "Job ID",
+              "displayName": "Job ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Applied On",
+              "displayName": "Applied On",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Follow-up On",
+              "displayName": "Follow-up On",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {
+          "cellFormat": "RAW"
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "Google Sheets account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "id": "node-104",
+      "name": "Show result page",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        720,
+        0
+      ],
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $('Work out status').first().json.apply ? '<html><head><meta charset=\"utf-8\"><meta http-equiv=\"refresh\" content=\"1;url=' + $('Work out status').first().json.link + '\"></head><body style=\"font-family:sans-serif;padding:40px\"><h2>✅ Marked as Applied</h2><p>Opening the job posting…</p></body></html>' : '<html><head><meta charset=\"utf-8\"></head><body style=\"font-family:sans-serif;padding:40px\"><h2>❌ Skipped</h2><p>You can close this tab.</p></body></html>' }}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "text/html; charset=utf-8"
+              }
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Apply or Skip link clicked": {
+      "main": [
+        [
+          {
+            "node": "Work out status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Work out status": {
+      "main": [
+        [
+          {
+            "node": "Update row in tracker",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update row in tracker": {
+      "main": [
+        [
+          {
+            "node": "Show result page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Kolkata",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  }
+}

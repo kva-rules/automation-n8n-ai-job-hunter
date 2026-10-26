@@ -1,0 +1,161 @@
+{
+  "name": "Job Hunter - 9 PM digest",
+  "nodes": [
+    {
+      "id": "node-201",
+      "name": "Every day 9 PM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 21 * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node-202",
+      "name": "Run manually (test)",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        200
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "node-203",
+      "name": "Read tracker",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        240,
+        100
+      ],
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_GOOGLE_SHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gid=0",
+          "cachedResultName": "Sheet1"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "Google Sheets account"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "id": "node-204",
+      "name": "Build digest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        100
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ===== 9 PM daily digest =====\nconst today = $now.setZone('Asia/Kolkata').toFormat('yyyy-MM-dd');\nconst rows = $input.all().map(i => i.json).filter(r => r['Job ID']);\nconst found = rows.filter(r => r['Date Found'] === today);\nconst applied = rows.filter(r => r['Applied On'] === today);\nconst skipped = found.filter(r => r['Status'] === 'Skipped');\nconst pending = rows.filter(r => r['Status'] === 'Pending');\nconst follow = rows.filter(r => r['Status'] === 'Applied' && r['Follow-up On'] && r['Follow-up On'] <= today);\nconst esc = s => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst line = r => `• ${esc(r['Role'])} – ${esc(r['Company'])} (${r['Fit Score']}) <a href=\"${esc(r['Link'])}\">link</a>`;\nlet t = `<b>📊 Job digest – ${today}</b>\\n\\nFound today: <b>${found.length}</b>\\nApplied today: <b>${applied.length}</b>\\nSkipped today: <b>${skipped.length}</b>\\nStill pending (all days): <b>${pending.length}</b>`;\nif (applied.length) t += `\\n\\n<b>Applied today</b>\\n` + applied.map(line).join('\\n');\nif (pending.length) t += `\\n\\n<b>Pending – decide on these</b>\\n` + pending.slice(0, 10).map(line).join('\\n');\nif (follow.length) t += `\\n\\n<b>⏰ Follow-ups due</b> (applied 7+ days ago)\\n` + follow.slice(0, 10).map(line).join('\\n');\nt += `\\n\\n<a href=\"https://docs.google.com/spreadsheets/d/YOUR_GOOGLE_SHEET_ID\">Open tracker</a>`;\nreturn [{ json: { text: t } }];\n"
+      }
+    },
+    {
+      "id": "node-205",
+      "name": "Send digest to Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        720,
+        100
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML",
+          "disable_web_page_preview": true
+        }
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "Telegram account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every day 9 PM": {
+      "main": [
+        [
+          {
+            "node": "Read tracker",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run manually (test)": {
+      "main": [
+        [
+          {
+            "node": "Read tracker",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read tracker": {
+      "main": [
+        [
+          {
+            "node": "Build digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build digest": {
+      "main": [
+        [
+          {
+            "node": "Send digest to Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Kolkata",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  }
+}
